@@ -362,7 +362,7 @@ void IRAM_ATTR pd_tx_task(void *pvParameters)
             msg->cbr(msg, ack);
         }
 
-        // TODO: ? : free(msg);
+        free(msg);
     }
 }
 
