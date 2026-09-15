@@ -21,6 +21,7 @@
 #include "pd_rx.h"
 #include "pd_tx.h"
 #include "pd.h"
+#include "pd_status.h"
 #include "crc32.h"
 
 QueueHandle_t pd_queue_rx_ack;
@@ -144,6 +145,10 @@ void pd_protocol_task(void *pvParameters)
         {
             /* call some functions periodically */
             pd_request_timer();
+            if (pd_status_pps_poll_due())
+            {
+                pd_send_control(PD_CONTROL_GET_PPS_STATUS);
+            }
             continue;
         }
 
@@ -165,6 +170,8 @@ void pd_protocol_task(void *pvParameters)
             {
                 rx_msg.pdo[i] = BUILD_LE_UINT32(rx_data->payload, 2 + i * 4);
             }
+
+            pd_status_on_packet(rx_data->dir, &hdr, rx_msg.pdo, hdr.num_data_objects);
 
             /* when no objects, then its a control message */
             if (hdr.num_data_objects == 0)
@@ -348,10 +355,12 @@ void pd_protocol_task(void *pvParameters)
             if (rx_data->target == PD_TARGET_HARD_RESET)
             {
                 pd_state_reset();
+                pd_status_on_reset();
             }
             else if (rx_data->target == PD_TARGET_CABLE_RESET)
             {
                 pd_state_reset();
+                pd_status_on_reset();
             }
             break;
         }
@@ -383,6 +392,15 @@ void pd_refresh_request(bool immediate)
         pd_request(state.requested_object, state.request_current_ma, immediate);
     }
     state.request_last_timestamp = esp_timer_get_time();
+}
+
+void pd_request_object(bool pps, uint8_t object, uint32_t voltage_mv, uint32_t current_ma)
+{
+    state.requested_pps = pps;
+    state.requested_object = object;
+    state.request_voltage_mv = voltage_mv;
+    state.request_current_ma = current_ma;
+    pd_refresh_request(true);
 }
 
 void pd_vdm(int command, int mode)
@@ -830,6 +848,7 @@ void pd_state_reset()
 void pd_init()
 {
     ESP_LOGI(TAG, "  * Initialize PD");
+    pd_status_init();
     pd_init_queues();
     pd_state_reset();
 

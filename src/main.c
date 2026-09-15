@@ -20,6 +20,7 @@
 #include "pd_rx.h"
 #include "pd_tx.h"
 #include "pd.h"
+#include "webserver.h"
 
 #define TAG "ESP32-PD"
 
@@ -41,6 +42,7 @@ void app_main()
 {
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     ESP_LOGI(TAG, "Starting up");
+    initialize_nvs();
 
     ESP_LOGI(TAG, "  * Initialize IDLE");
 
@@ -49,6 +51,9 @@ void app_main()
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
     pd_init();
+
+    ESP_LOGI(TAG, "  * Web interface");
+    webserver_start();
 
     ESP_LOGI(TAG, "  * Main loop");
 

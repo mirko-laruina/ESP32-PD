@@ -193,6 +193,8 @@ typedef enum
     PD_DATA_EPR_MODE = 0x0A,
     PD_DATA_SOURCE_INFO = 0x0B,
     PD_DATA_REVISION = 0x0C,
+    PD_DATA_PPS_STATUS = 0x0D,
+    PD_DATA_COUNTRY_CODE = 0x0E,
     PD_VENDOR_MESSAGE = 0x0F
 } pd_message_type_t;
 
