@@ -20,6 +20,19 @@ Just good enough for your casual DIY project, saving you another huge component 
 -   **Minimal Hardware Footprint:** Removes the need for bulky PD controllers by leveraging simple transistor-based level shifting.
 -   **Exploits** the GPIOs capabilities by intentionally using them as weak outputs being driven to GND by the transistor or the CC-line. It's all still inside the specs, yet nothing one would really use for a reliable field design.
 -   Uses one GPIO for receiving and one GPIO (far beyond PD spec) or two GPIOs (closer to PD spec) for driving one CC line with 3.3V/1.7V, whilst both variants seem to work reliable.
+-   **Web Control Interface:** Built-in web server (Wi-Fi station, credentials stored in NVS) that shows the live protocol status and lets you negotiate power modes from a browser.
+    -   Status page: connection/protocol state, last communication age, charger presence, negotiated output values and uptime.
+    -   Guided three-step power request: pick a mode, set voltage and current, apply and watch the result (`pending` → `accepted` → `ready`, or `rejected`/`timeout`).
+    -   Fixed PDO selection with per-PDO current limit; PPS selection with the voltage/current range advertised by the charger.
+    -   Optional live **PPS status polling** (`Get_PPS_Status`, disabled by default via UI toggle) reporting the charger-side voltage, current and status while a PPS contract is active.
+    -   Server-side validation of every request against the capabilities the charger actually advertised (mode existence, current limits, PPS voltage range and 20 mV granularity).
+-   **Console Commands:** Interactive console over USB-Serial-JTAG (`get_src_cap`, `req_obj`, `req_pps`, `vdm`, `webconfig`, `log_level`, ...).
+
+### Using the Web Interface
+
+1. Connect to the serial console and run `webconfig <ssid> <password>` - the credentials are stored persistently in NVS and reused on every boot.
+2. Open the URL printed in the log (e.g. `http://192.168.1.42/`) from any device on the same network.
+3. The page polls the device once per second and disables all controls while the charger is unreachable, a request is in flight, or the advertised capabilities are stale.
 
 ## Current State
 
