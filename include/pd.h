@@ -3,6 +3,7 @@
 #include "pd_types.h"
 
 #define PD_REQUEST_REFRESH_MS 2000
+#define PD_REQUEST_MIN_INTERVAL_MS 500
 
 void pd_mode(pd_mode_t mode);
 void pd_init();

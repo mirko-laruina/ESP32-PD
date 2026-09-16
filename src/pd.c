@@ -383,6 +383,14 @@ void pd_protocol_task(void *pvParameters)
 
 void pd_refresh_request(bool immediate)
 {
+    uint64_t now = esp_timer_get_time();
+
+    if (!immediate &&
+        now - state.request_last_timestamp < PD_REQUEST_MIN_INTERVAL_MS * 1000ULL)
+    {
+        return;
+    }
+
     if (state.requested_pps)
     {
         pd_request_pps(state.requested_object, state.request_voltage_mv, state.request_current_ma, immediate);
@@ -391,7 +399,7 @@ void pd_refresh_request(bool immediate)
     {
         pd_request(state.requested_object, state.request_current_ma, immediate);
     }
-    state.request_last_timestamp = esp_timer_get_time();
+    state.request_last_timestamp = now;
 }
 
 void pd_request_object(bool pps, uint8_t object, uint32_t voltage_mv, uint32_t current_ma)

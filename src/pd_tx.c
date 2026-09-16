@@ -329,6 +329,11 @@ void IRAM_ATTR pd_tx_task(void *pvParameters)
                 ack = (ack_id == pd_tx_message_id);
             }
 
+            if (!ack && retries)
+            {
+                vTaskDelay(20 / portTICK_PERIOD_MS);
+            }
+
 #ifdef PD_LOG_TX_PACKETS
             /* log the message */
             pd_rx_buf_t *rx_data;
