@@ -50,7 +50,8 @@ typedef struct
 
     bool pps_poll_enabled;
     bool pps_status_seen;
-    bool pps_status_unsupported;
+    bool pps_status_capability_known;
+    bool pps_status_supported;
     bool pps_status_pending;
     uint8_t pps_status_code;
     uint32_t pps_status_mv;

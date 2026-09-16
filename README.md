@@ -24,7 +24,7 @@ Just good enough for your casual DIY project, saving you another huge component 
     -   Status page: connection/protocol state, last communication age, charger presence, negotiated output values and uptime.
     -   Guided three-step power request: pick a mode, set voltage and current, apply and watch the result (`pending` → `accepted` → `ready`, or `rejected`/`timeout`).
     -   Fixed PDO selection with per-PDO current limit; PPS selection with the voltage/current range advertised by the charger.
-    -   Optional live **PPS status polling** (`Get_PPS_Status`, disabled by default via UI toggle) reporting the charger-side voltage, current and status while a PPS contract is active.
+    -   Optional live **PPS status polling** (`Get_PPS_Status`) reporting the charger-side voltage, current and status while a PPS contract is active; support is probed automatically and polling is enabled only for compatible chargers.
     -   Server-side validation of every request against the capabilities the charger actually advertised (mode existence, current limits, PPS voltage range and 20 mV granularity).
 -   **Console Commands:** Interactive console over USB-Serial-JTAG (`get_src_cap`, `req_obj`, `req_pps`, `vdm`, `webconfig`, `log_level`, ...).
 
@@ -33,6 +33,19 @@ Just good enough for your casual DIY project, saving you another huge component 
 1. Connect to the serial console and run `webconfig <ssid> <password>` - the credentials are stored persistently in NVS and reused on every boot.
 2. Open the URL printed in the log (e.g. `http://192.168.1.42/`) from any device on the same network.
 3. The page polls the device once per second and disables all controls while the charger is unreachable, a request is in flight, or the advertised capabilities are stale.
+4. The **Request fresh capabilities** button is in the connection and protocol status card. Use it after connecting or replacing the charger.
+5. After a PPS contract reaches `ready`, the device automatically probes `Get_PPS_Status`. The PPS polling checkbox becomes available only when the charger answers with `PPS_Status`; `Not_Supported` or a timeout marks the feature as unavailable.
+6. The interface treats the charger as disconnected after a short period without received PD traffic and clears the controls. Locally looped-back ESP32 packets and unacknowledged transmissions do not count as charger communication.
+
+### Wi-Fi Configuration
+
+The device operates as a Wi-Fi station only. Run the following command once through the USB-Serial-JTAG console:
+
+```text
+webconfig <ssid> <password>
+```
+
+The credentials are stored in the NVS namespace `web` under the keys `ssid` and `pass`, then reused automatically after reboot. The HTTP server starts only after the station obtains an IP address. The Wi-Fi manager uses one STA netif and one event handler; it reconnects using the standard ESP-IDF station flow.
 
 ## Current State
 

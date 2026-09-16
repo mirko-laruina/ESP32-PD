@@ -7,8 +7,9 @@
 #include "pd_proto.h"
 
 #define PD_STATUS_REQ_TIMEOUT_US (2500000ULL)
+#define PD_STATUS_CHARGER_TIMEOUT_US (3000000ULL)
 #define PD_STATUS_PPS_POLL_PERIOD_US (1000000ULL)
-#define PD_STATUS_PPS_POLL_TIMEOUT_US (1500000ULL)
+#define PD_STATUS_PPS_POLL_TIMEOUT_US (500000ULL)
 
 static SemaphoreHandle_t s_mutex;
 static pd_status_data_t s_status;
@@ -100,7 +101,7 @@ void pd_status_on_packet(uint8_t dir, const pd_msg_header *hdr, const uint32_t *
 {
     pd_status_init();
 
-    if (hdr == NULL)
+    if (hdr == NULL || hdr->data_role != PD_DATA_ROLE_DFP)
     {
         return;
     }
@@ -109,11 +110,10 @@ void pd_status_on_packet(uint8_t dir, const pd_msg_header *hdr, const uint32_t *
 
     bool received = (dir == PD_PACKET_RECEIVED || dir == PD_PACKET_RECEIVED_ACKNOWLEDGED);
 
-    s_status.last_rx_us = esp_timer_get_time();
-    strlcpy(s_status.last_message, msg_to_string(hdr), sizeof(s_status.last_message));
-
     if (received)
     {
+        s_status.last_rx_us = esp_timer_get_time();
+        strlcpy(s_status.last_message, msg_to_string(hdr), sizeof(s_status.last_message));
         s_status.charger_seen = true;
 
         if (pdo_count > 0 && hdr->message_type == PD_DATA_SOURCE_CAPABILITIES)
@@ -124,7 +124,8 @@ void pd_status_on_packet(uint8_t dir, const pd_msg_header *hdr, const uint32_t *
         {
             uint32_t value = pdo[0];
             s_status.pps_status_seen = true;
-            s_status.pps_status_unsupported = false;
+            s_status.pps_status_capability_known = true;
+            s_status.pps_status_supported = true;
             s_status.pps_status_pending = false;
             s_status.pps_status_code = (value >> 18) & 0x03;
             s_status.pps_status_mv = (value & 0x1FF) * 100;
@@ -139,7 +140,8 @@ void pd_status_on_packet(uint8_t dir, const pd_msg_header *hdr, const uint32_t *
                 if (s_status.pps_status_pending)
                 {
                     s_status.pps_status_pending = false;
-                    s_status.pps_status_unsupported = true;
+                    s_status.pps_status_capability_known = true;
+                    s_status.pps_status_supported = false;
                 }
                 break;
 
@@ -181,7 +183,14 @@ void pd_status_on_reset(void)
 {
     pd_status_init();
     xSemaphoreTake(s_mutex, portMAX_DELAY);
+    s_status.charger_seen = false;
+    s_status.last_rx_us = 0;
+    s_status.pdo_count = 0;
     s_status.req_state = PD_STATUS_REQ_NONE;
+    s_status.pps_status_seen = false;
+    s_status.pps_status_capability_known = false;
+    s_status.pps_status_supported = false;
+    s_status.pps_status_pending = false;
     xSemaphoreGive(s_mutex);
 }
 
@@ -190,6 +199,14 @@ void pd_status_begin_request(bool pps, uint8_t object, uint32_t mv, uint32_t ma)
     pd_status_init();
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     s_status.req_state = PD_STATUS_REQ_PENDING;
+    if (pps)
+    {
+        s_status.pps_status_seen = false;
+        s_status.pps_status_capability_known = false;
+        s_status.pps_status_supported = false;
+        s_status.pps_status_pending = false;
+        s_status.pps_poll_last_us = 0;
+    }
     s_status.req_pps = pps;
     s_status.req_object = object;
     s_status.req_mv = mv;
@@ -207,8 +224,21 @@ bool pd_status_get(pd_status_data_t *out)
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
 
+    uint64_t now = esp_timer_get_time();
+    if (s_status.charger_seen &&
+        now - s_status.last_rx_us > PD_STATUS_CHARGER_TIMEOUT_US)
+    {
+        s_status.charger_seen = false;
+        s_status.pdo_count = 0;
+        s_status.req_state = PD_STATUS_REQ_NONE;
+        s_status.pps_status_seen = false;
+        s_status.pps_status_capability_known = false;
+        s_status.pps_status_supported = false;
+        s_status.pps_status_pending = false;
+    }
+
     if (s_status.req_state == PD_STATUS_REQ_PENDING &&
-        esp_timer_get_time() - s_status.req_time_us > PD_STATUS_REQ_TIMEOUT_US)
+        now - s_status.req_time_us > PD_STATUS_REQ_TIMEOUT_US)
     {
         s_status.req_state = PD_STATUS_REQ_TIMEOUT;
     }
@@ -248,14 +278,26 @@ bool pd_status_pps_poll_due(void)
         now - s_status.pps_poll_last_us > PD_STATUS_PPS_POLL_TIMEOUT_US)
     {
         s_status.pps_status_pending = false;
-        s_status.pps_status_unsupported = true;
+        if (!s_status.pps_status_capability_known)
+        {
+            s_status.pps_status_capability_known = true;
+            s_status.pps_status_supported = false;
+        }
     }
 
-    if (s_status.pps_poll_enabled &&
-        s_status.req_pps &&
+    if (s_status.req_pps &&
         s_status.req_state == PD_STATUS_REQ_READY &&
         !s_status.pps_status_pending &&
-        now - s_status.pps_poll_last_us > PD_STATUS_PPS_POLL_PERIOD_US)
+        !s_status.pps_status_capability_known)
+    {
+        s_status.pps_status_pending = true;
+        s_status.pps_poll_last_us = now;
+        due = true;
+    }
+    else if (s_status.pps_poll_enabled &&
+             s_status.pps_status_supported &&
+             !s_status.pps_status_pending &&
+             now - s_status.pps_poll_last_us > PD_STATUS_PPS_POLL_PERIOD_US)
     {
         s_status.pps_status_pending = true;
         s_status.pps_poll_last_us = now;
