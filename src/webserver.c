@@ -1,9 +1,6 @@
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
-#include "esp_wifi.h"
-#include "esp_netif.h"
-#include "esp_event.h"
 #include "esp_timer.h"
 #include "esp_http_server.h"
 #include "nvs.h"
@@ -17,15 +14,13 @@
 #include "pd_status.h"
 #include "webserver.h"
 #include "web_page.h"
+#include "wifi_manager.h"
 
 #define TAG "WEB"
 #define NVS_NAMESPACE "web"
 #define REQUEST_BUSY_US (1500000ULL)
 #define CHARGER_STALE_US (10000000ULL)
 
-static bool s_wifi_connected;
-static char s_ip_str[16];
-static char s_ssid_str[33];
 static bool s_http_started;
 static httpd_handle_t s_httpd;
 
@@ -74,9 +69,9 @@ static esp_err_t serve_status(httpd_req_t *req)
                     "{\"uptime_s\":%lld,\"wifi\":{\"connected\":%s,\"ip\":\"%s\",\"ssid\":\"%s\"},"
                     "\"pd\":{\"last_rx_ms\":%lld,\"charger_seen\":%s,\"last_message\":\"%s\",\"pdos\":[",
                     (long long)(now / 1000000),
-                    s_wifi_connected ? "true" : "false",
-                    s_ip_str,
-                    s_ssid_str,
+                    wifi_manager_is_connected() ? "true" : "false",
+                    wifi_manager_ip(),
+                    wifi_manager_ssid(),
                     st.charger_seen ? (long long)((now - st.last_rx_us) / 1000) : -1LL,
                     st.charger_seen ? "true" : "false",
                     st.last_message);
@@ -105,25 +100,32 @@ static esp_err_t serve_status(httpd_req_t *req)
         len--;
     }
 
-    const char *pps_state = "off";
-    if (st.pps_poll_enabled)
+    const char *pps_capability = "unknown";
+    if (st.pps_status_capability_known)
     {
-        if (!(st.req_pps && st.req_state == PD_STATUS_REQ_READY))
-        {
-            pps_state = "gated";
-        }
-        else if (st.pps_status_unsupported)
-        {
-            pps_state = "unsupported";
-        }
-        else if (st.pps_status_seen)
-        {
-            pps_state = "live";
-        }
-        else
-        {
-            pps_state = "waiting";
-        }
+        pps_capability = st.pps_status_supported ? "supported" : "unsupported";
+    }
+
+    const char *pps_state = "off";
+    if (!st.req_pps || st.req_state != PD_STATUS_REQ_READY)
+    {
+        pps_state = "gated";
+    }
+    else if (!st.pps_status_capability_known || st.pps_status_pending)
+    {
+        pps_state = "checking";
+    }
+    else if (!st.pps_status_supported)
+    {
+        pps_state = "unsupported";
+    }
+    else if (st.pps_poll_enabled && st.pps_status_seen)
+    {
+        pps_state = "live";
+    }
+    else if (st.pps_poll_enabled)
+    {
+        pps_state = "waiting";
     }
 
     char mv_str[12], ma_str[12], age_str[16], code_str[12];
@@ -144,7 +146,7 @@ static esp_err_t serve_status(httpd_req_t *req)
     len += snprintf(buf + len, sizeof(buf) - len,
                     "],\"req\":{\"state\":\"%s\",\"pps\":%s,\"object\":%u,\"mv\":%lu,\"ma\":%lu,\"age_ms\":%lu},"
                     "\"actual\":{\"reported\":false,\"estimated\":%s,\"mv\":%lu,\"ma\":%lu},"
-                    "\"pps_poll\":{\"state\":\"%s\",\"code\":%s,\"mv\":%s,\"ma\":%s,\"age_ms\":%s}}}",
+                    "\"pps_poll\":{\"enabled\":%s,\"capability\":\"%s\",\"state\":\"%s\",\"code\":%s,\"mv\":%s,\"ma\":%s,\"age_ms\":%s}}}",
                     req_state_name(st.req_state),
                     st.req_pps ? "true" : "false",
                     st.req_object,
@@ -154,6 +156,8 @@ static esp_err_t serve_status(httpd_req_t *req)
                     st.req_state == PD_STATUS_REQ_READY ? "true" : "false",
                     (unsigned long)st.req_mv,
                     (unsigned long)st.req_ma,
+                    st.pps_poll_enabled ? "true" : "false",
+                    pps_capability,
                     pps_state,
                     code_str,
                     mv_str,
@@ -360,58 +364,14 @@ static void start_httpd(void)
         httpd_register_uri_handler(s_httpd, &uri_refresh);
         httpd_register_uri_handler(s_httpd, &uri_pps_poll);
         s_http_started = true;
-        ESP_LOGI(TAG, "Web server avviato su http://%s/", s_ip_str);
+        ESP_LOGI(TAG, "Web server avviato su http://%s/", wifi_manager_ip());
     }
 }
 
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+static void wifi_ip_ready(const char *ip)
 {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
-    {
-        s_wifi_connected = false;
-        ESP_LOGW(TAG, "Wi-Fi disconnesso, nuovo tentativo...");
-        esp_wifi_connect();
-    }
-    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
-    {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        snprintf(s_ip_str, sizeof(s_ip_str), IPSTR, IP2STR(&event->ip_info.ip));
-        s_wifi_connected = true;
-        ESP_LOGI(TAG, "Wi-Fi connesso, IP: %s", s_ip_str);
-        start_httpd();
-    }
-}
-
-static bool wifi_connect(const char *ssid, const char *pass)
-{
-    static bool wifi_initialized = false;
-
-    if (!wifi_initialized)
-    {
-        ESP_ERROR_CHECK(esp_netif_init());
-        ESP_ERROR_CHECK(esp_event_loop_create_default());
-        esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-        assert(sta_netif);
-        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-        ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &wifi_event_handler, NULL));
-        ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
-        ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-        ESP_ERROR_CHECK(esp_wifi_start());
-        wifi_initialized = true;
-    }
-
-    wifi_config_t wifi_config = {0};
-    strlcpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
-    if (pass)
-    {
-        strlcpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password));
-    }
-    strlcpy(s_ssid_str, ssid, sizeof(s_ssid_str));
-
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    return esp_wifi_connect() == ESP_OK;
+    (void)ip;
+    start_httpd();
 }
 
 static struct
@@ -445,7 +405,7 @@ static int cmd_webconfig(int argc, char **argv)
     nvs_close(nvs);
 
     printf("Credenziali salvate. Connessione a \"%s\"...\n", ssid);
-    wifi_connect(ssid, pass);
+    wifi_manager_connect(ssid, pass);
     return 0;
 }
 
@@ -455,6 +415,8 @@ void webserver_start(void)
     char ssid[33] = {0};
     char pass[64] = {0};
     size_t len;
+
+    wifi_manager_set_ip_callback(wifi_ip_ready);
 
     webconfig_args.ssid = arg_str1(NULL, NULL, "<ssid>", "SSID della rete Wi-Fi");
     webconfig_args.pass = arg_str0(NULL, NULL, "<password>", "Password Wi-Fi (vuota per reti aperte)");
@@ -486,7 +448,6 @@ void webserver_start(void)
     nvs_get_str(nvs, "pass", pass, &len);
     nvs_close(nvs);
 
-    strlcpy(s_ssid_str, ssid, sizeof(s_ssid_str));
     ESP_LOGI(TAG, "Connessione Wi-Fi a \"%s\"...", ssid);
-    wifi_connect(ssid, pass);
+    wifi_manager_connect(ssid, pass);
 }

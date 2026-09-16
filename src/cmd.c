@@ -11,7 +11,6 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "cmd_system.h"
-#include "cmd_wifi.h"
 #include "cmd_nvs.h"
 #include "argtable3/argtable3.h"
 
@@ -246,9 +245,6 @@ void cmd_init()
 #endif
 #if SOC_DEEP_SLEEP_SUPPORTED
     register_system_deep_sleep();
-#endif
-#if (CONFIG_ESP_WIFI_ENABLED || CONFIG_ESP_HOST_WIFI_ENABLED)
-    register_wifi();
 #endif
     register_nvs();
 
